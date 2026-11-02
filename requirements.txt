@@ -1,5 +1,2 @@
 Flask
-Flask-SocketIO
-eventlet
-Flask
 gunicorn
