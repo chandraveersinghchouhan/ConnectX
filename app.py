@@ -1,19 +1,21 @@
-
 import os
-import sqlite3
+import psycopg
+from psycopg.rows import dict_row
+from psycopg import errors
 from flask import Flask, request, redirect, session, jsonify, render_template_string
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "change-this-secret-key")
 
-DB = os.environ.get("DB_PATH", "messages.db")
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL is missing. Add your Neon connection string in Render Environment settings.")
 
 
 def connect_db():
-    con = sqlite3.connect(DB)
-    con.row_factory = sqlite3.Row
-    return con
+    return psycopg.connect(DATABASE_URL, row_factory=dict_row)
 
 
 def setup():
@@ -26,11 +28,11 @@ def setup():
         """)
         con.execute("""
             CREATE TABLE IF NOT EXISTS messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id BIGSERIAL PRIMARY KEY,
                 sender TEXT NOT NULL,
                 receiver TEXT NOT NULL,
                 message TEXT NOT NULL,
-                created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
@@ -109,12 +111,12 @@ def register():
             try:
                 with connect_db() as con:
                     con.execute(
-                        "INSERT INTO users VALUES (?, ?)",
+                        "INSERT INTO users (username, password) VALUES (%s, %s)",
                         (username, generate_password_hash(password))
                     )
                 session["user"] = username
                 return redirect("/")
-            except sqlite3.IntegrityError:
+            except errors.UniqueViolation:
                 error = "Username already exists."
 
     return render_template_string(
@@ -131,7 +133,7 @@ def login():
 
         with connect_db() as con:
             user = con.execute(
-                "SELECT * FROM users WHERE username=?",
+                "SELECT * FROM users WHERE username = %s",
                 (username,)
             ).fetchone()
 
@@ -168,7 +170,7 @@ def messages():
 
         with connect_db() as con:
             exists = con.execute(
-                "SELECT username FROM users WHERE username=?",
+                "SELECT username FROM users WHERE username = %s",
                 (receiver,)
             ).fetchone()
 
@@ -176,7 +178,7 @@ def messages():
                 return jsonify({"error": "User not found"}), 404
 
             con.execute(
-                "INSERT INTO messages (sender, receiver, message) VALUES (?, ?, ?)",
+                "INSERT INTO messages (sender, receiver, message) VALUES (%s, %s, %s)",
                 (me, receiver, message)
             )
 
@@ -186,7 +188,7 @@ def messages():
 
     with connect_db() as con:
         exists = con.execute(
-            "SELECT username FROM users WHERE username=?",
+            "SELECT username FROM users WHERE username = %s",
             (receiver,)
         ).fetchone()
 
@@ -194,14 +196,14 @@ def messages():
             return jsonify({"error": "User not found"}), 404
 
         rows = con.execute("""
-            SELECT id, sender, receiver, message, created
+            SELECT id, sender, receiver, message, created::text AS created
             FROM messages
-            WHERE (sender=? AND receiver=?)
-               OR (sender=? AND receiver=?)
+            WHERE (sender = %s AND receiver = %s)
+               OR (sender = %s AND receiver = %s)
             ORDER BY id DESC LIMIT 100
         """, (me, receiver, receiver, me)).fetchall()
 
-    return jsonify([dict(row) for row in reversed(rows)])
+    return jsonify(list(reversed(rows)))
 
 
 CHAT_PAGE = """
